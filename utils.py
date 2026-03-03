@@ -36,6 +36,7 @@ from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 from pytorch_grad_cam.utils.image import show_cam_on_image
 from pathlib import Path
 from PIL import Image
+from sklearn.utils.class_weight import compute_class_weight
 
 # Machine Learning and Deep Learning
 from sklearn.metrics import (
@@ -57,6 +58,56 @@ import shutil
 import random
 from pathlib import Path
 from collections import Counter
+
+from tqdm import tqdm
+
+def clean_low_variance_dataset(root_dir, threshold=2.0):
+    removed_count = 0
+    for subdir, _, files in os.walk(root_dir):
+        for file in tqdm(files, desc=f"Cleaning {os.path.basename(subdir)}"):
+            if file.lower().endswith(('.png', '.jpg', '.jpeg', '.tif')):
+                path = os.path.join(subdir, file)
+                # Charger l'image en niveaux de gris
+                img = np.array(Image.open(path).convert('L'))
+                
+                # Si l'écart-type est trop faible, on supprime
+                if img.std() < threshold:
+                    os.remove(path)
+                    removed_count += 1
+                    
+    print(f"✅ Nettoyage terminé : {removed_count} images inutiles supprimées.")
+
+def preprocess_sar(image_np):
+    # 1. Clipping des outliers (pixels saturés à 255/artefacts)
+    # On plafonne au percentile 99 pour ramener les zones brûlées vers le haut de l'échelle utile
+    p99 = np.percentile(image_np, 99)
+    image_clipped = np.clip(image_np, 0, p99)
+    
+    # 2. Normalisation d'échelle pour OpenCV (repassage en uint8)
+    # On scale pour que p99 devienne 255 afin de garder toute la dynamique
+    image_scaled = ((image_clipped - image_clipped.min()) * (255 / (image_clipped.max() - image_clipped.min()))).astype(np.uint8)
+    
+    # 3. Débruitage Médian (pour lisser le speckle tout en gardant les bords)
+    denoised = cv2.medianBlur(image_scaled, 3)
+    
+    return denoised
+
+def verify_batch(loader,std,mean):
+    batch_images, batch_labels = next(iter(loader))
+    plt.figure(figsize=(10, 5))
+    for i in range(4):
+        plt.subplot(1, 4, i+1)
+        # On dé-normalise pour l'affichage
+        img = batch_images[i].squeeze().numpy()
+        img = (img * std[0]) + mean[0] 
+        plt.imshow(img, cmap='gray')
+        plt.title(f"Label: {batch_labels[i]}")
+        plt.axis('off')
+    plt.show()
+
+def denoise_sar(image_np):
+    # Assure-toi que c'est du uint8 pour OpenCV
+    return cv2.medianBlur(image_np, 3)
 
 def create_spatial_split_full(data_dir, output_dir, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1, seed=42):
     random.seed(seed)
@@ -336,36 +387,21 @@ def evaluate_test_set(model, test_loader, device):
     plt.ylabel('Actual')
     plt.show()
 
-def get_class_weights(dataset: Union[ImageFolder, Dataset]) -> torch.Tensor:
-    """
-    Calcule les poids de classe à partir d'un Dataset PyTorch.
+# --- 5. Calcul des poids de classe pour gérer le déséquilibre (Imbalance) ---
+def get_class_weights(dataset):
+    # Récupérer toutes les étiquettes du set d'entraînement
+    # dataset.targets contient les labels (0 ou 1) dans l'ordre du dataset
+    targets = dataset.targets
+    classes = np.unique(targets)
     
-    Args:
-        dataset: Un objet héritant de torch.utils.data.Dataset (idéalement ImageFolder).
-        
-    Returns:
-        torch.Tensor: Un tenseur contenant les poids pour chaque classe.
-    """
-    # Vérification de sécurité pour ImageFolder qui possède l'attribut .targets
-    if hasattr(dataset, 'targets'):
-        targets = dataset.targets
-    else:
-        # Si c'est un Dataset personnalisé, on extrait les labels manuellement
-        # Attention : cela peut être lent sur de très gros datasets
-        targets = [label for _, label in dataset]
+    # Calculer les poids : poids = n_samples / (n_classes * n_samples_at_class)
+    weights = compute_class_weight(
+        class_weight='balanced', 
+        classes=classes, 
+        y=targets
+    )
     
-    # Comptage des classes
-    # dataset.classes existe sur ImageFolder et contient ['Class_0', 'Class_1']
-    num_classes = len(dataset.classes) if hasattr(dataset, 'classes') else len(set(targets))
-    
-    class_counts = torch.tensor([targets.count(i) for i in range(num_classes)])
-    
-    total_samples = len(targets)
-    
-    # Formule : poids = N / (C * n_i)
-    weights = total_samples / (num_classes * class_counts.float())
-    
-    return weights
+    return torch.tensor(weights, dtype=torch.float)
 
 def show_img_size_and_channels(img_path):
     """
