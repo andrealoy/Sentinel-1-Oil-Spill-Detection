@@ -51,6 +51,95 @@ from typing import Union
 from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.image import show_cam_on_image
 
+from collections import Counter
+import os
+import shutil
+import random
+from pathlib import Path
+from collections import Counter
+
+def create_spatial_split_full(data_dir, output_dir, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1, seed=42):
+    random.seed(seed)
+    data_dir = Path(data_dir)
+    output_dir = Path(output_dir)
+
+    # 1. Analyse des régions (Correction ici : on utilise rglob comme dans ton count)
+    region_map = {} 
+    all_images_count = 0
+    
+    print(f"🔍 Analyse du dossier source : {data_dir}")
+    
+    # On cherche tous les fichiers .jpg (ou * si tu as plusieurs formats)
+    # On remplace la boucle class_folder par rglob
+    for img_path in data_dir.rglob('*.jpg'): 
+        if img_path.is_file() and not img_path.name.startswith('.'):
+            region = extract_scene_id(img_path.stem)
+            if region not in region_map:
+                region_map[region] = []
+            region_map[region].append(img_path)
+            all_images_count += 1
+
+    if all_images_count == 0:
+        print("❌ AUCUNE IMAGE TROUVÉE ! Vérifie l'extension (.jpg ou .png ?) ou le chemin.")
+        return
+
+    # 2. Tri et Répartition (Le reste de ta logique est bon)
+    sorted_regions = sorted(region_map.keys(), key=lambda r: len(region_map[r]), reverse=True)
+    
+    train_regions, val_regions, test_regions = [], [], []
+    train_count, val_count, test_count = 0, 0, 0
+    
+    target_val = all_images_count * val_ratio
+    target_test = all_images_count * test_ratio
+
+    for r in sorted_regions:
+        count = len(region_map[r])
+        if count > target_val and count > target_test:
+            train_regions.append(r)
+            train_count += count
+        elif val_count + count <= target_val * 1.5:
+            val_regions.append(r)
+            val_count += count
+        elif test_count + count <= target_test * 1.5:
+            test_regions.append(r)
+            test_count += count
+        else:
+            train_regions.append(r)
+            train_count += count
+
+    print(f"\n📊 Répartition finale : {train_count} Train | {val_count} Val | {test_count} Test")
+
+    # 3. Copie (Correction : img_path.parent.name récupère le nom du dossier de classe)
+    print("🚀 Copie en cours...")
+    for split_name, regions in [('train', train_regions), ('val', val_regions), ('test', test_regions)]:
+        for r in regions:
+            for img_path in region_map[r]:
+                class_name = img_path.parent.name 
+                dest_dir = output_dir / split_name / class_name
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(img_path, dest_dir / img_path.name)
+
+    print(f"✅ Terminé ! {all_images_count} images traitées.")
+
+def count_images_by_region(data_dir):
+    """
+    Compte le nombre d'images par région (ex: VEN, GBR, BAH) en extrayant le code géographique du nom de fichier.
+    Affiche les résultats sous forme de graphique à barres.
+    """
+    data_dir = Path(data_dir)
+    region_counts = Counter()
+
+    for img_path in data_dir.rglob("*.jpg"):
+        scene_id = extract_scene_id(img_path.stem)  # Extrait le code géographique
+        region_counts[scene_id] += 1
+
+    # Affichage des résultats
+    regions = list(region_counts.keys())
+    counts = list(region_counts.values())
+
+    print("Nombre d'images par région:")
+    for region, count in region_counts.items():
+        print(f"{region}: {count} images.")
 
 def find_and_remove_black_images(data_dir, threshold=1.0, delete=False):
     """
@@ -270,6 +359,7 @@ def get_class_weights(dataset: Union[ImageFolder, Dataset]) -> torch.Tensor:
     num_classes = len(dataset.classes) if hasattr(dataset, 'classes') else len(set(targets))
     
     class_counts = torch.tensor([targets.count(i) for i in range(num_classes)])
+    
     total_samples = len(targets)
     
     # Formule : poids = N / (C * n_i)
@@ -287,34 +377,26 @@ def show_img_size_and_channels(img_path):
     except Exception as e:
         print(f"Erreur lors de l'ouverture de l'image {img_path}: {e}")
 
-def plot_training_history(history):
-    # Récupération des données
-    acc = history.history['accuracy']
-    val_acc = history.history['val_accuracy']
-    loss = history.history['loss']
-    val_loss = history.history['val_loss']
-    epochs_range = range(len(acc))
-
-    plt.figure(figsize=(15, 5))
-
-    # --- Graphique de l'Accuracy ---
+def plot_history(hist):
+    plt.figure(figsize=(12, 4))
+    
+    # --- Graphique de la Perte (Loss) ---
     plt.subplot(1, 2, 1)
-    plt.plot(epochs_range, acc, label='Entraînement', linewidth=2)
-    plt.plot(epochs_range, val_acc, label='Validation', linestyle='--')
-    plt.title('Précision (Accuracy)', fontsize=14, fontweight='bold')
+    # On utilise 'loss' au lieu de 'train_loss' pour matcher ton wrapper
+    plt.plot(hist['loss'], label='Train', linewidth=2)
+    plt.plot(hist['val_loss'], label='Val', linestyle='--')
+    plt.title('Loss (Perte)', fontsize=12, fontweight='bold')
     plt.xlabel('Époques')
-    plt.ylabel('Score')
-    plt.legend(loc='lower right')
+    plt.legend()
     plt.grid(True, alpha=0.3)
 
-    # --- Graphique de la Perte ---
+    # --- Graphique du F1-Score ---
     plt.subplot(1, 2, 2)
-    plt.plot(epochs_range, loss, label='Entraînement', linewidth=2)
-    plt.plot(epochs_range, val_loss, label='Validation', linestyle='--')
-    plt.title('Perte (Loss)', fontsize=14, fontweight='bold')
+    # On utilise 'val_accuracy' pour matcher ton wrapper
+    plt.plot(hist['val_accuracy'], label='Val accuracy', color='green', linewidth=2)
+    plt.title('F1 Score', fontsize=12, fontweight='bold')
     plt.xlabel('Époques')
-    plt.ylabel('Erreur')
-    plt.legend(loc='upper right')
+    plt.legend()
     plt.grid(True, alpha=0.3)
 
     plt.tight_layout()
