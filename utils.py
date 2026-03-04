@@ -29,7 +29,7 @@ import matplotlib.pyplot as plt
 import torch
 import cv2
 
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, WeightedRandomSampler
 from torchvision.datasets import ImageFolder
 from pytorch_grad_cam import GradCAM
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
@@ -403,6 +403,21 @@ def get_class_weights(dataset):
     
     return torch.tensor(weights, dtype=torch.float)
 
+def create_balanced_sampler(dataset):
+    targets = np.array(dataset.targets)
+    class_counts = np.bincount(targets)
+
+    class_weights = 1.0 / np.maximum(class_counts, 1)
+    sample_weights = class_weights[targets]
+
+    sampler = WeightedRandomSampler(
+        weights=torch.as_tensor(sample_weights, dtype=torch.double),
+        num_samples=len(sample_weights),
+        replacement=True
+    )
+
+    return sampler, class_counts.tolist()
+
 def show_img_size_and_channels(img_path):
     """
     Affiche la taille et le nombre de canaux d'une image donnée.
@@ -414,26 +429,36 @@ def show_img_size_and_channels(img_path):
         print(f"Erreur lors de l'ouverture de l'image {img_path}: {e}")
 
 def plot_history(hist):
-    plt.figure(figsize=(12, 4))
-    
+    has_val_f1 = 'val_f1' in hist and len(hist['val_f1']) > 0
+    n_cols = 3 if has_val_f1 else 2
+    plt.figure(figsize=(6 * n_cols, 4))
+
     # --- Graphique de la Perte (Loss) ---
-    plt.subplot(1, 2, 1)
-    # On utilise 'loss' au lieu de 'train_loss' pour matcher ton wrapper
-    plt.plot(hist['loss'], label='Train', linewidth=2)
-    plt.plot(hist['val_loss'], label='Val', linestyle='--')
-    plt.title('Loss (Perte)', fontsize=12, fontweight='bold')
+    plt.subplot(1, n_cols, 1)
+    plt.plot(hist['loss'], label='Train loss', linewidth=2)
+    plt.plot(hist['val_loss'], label='Val loss', linestyle='--')
+    plt.title('Loss', fontsize=12, fontweight='bold')
     plt.xlabel('Époques')
     plt.legend()
     plt.grid(True, alpha=0.3)
 
-    # --- Graphique du F1-Score ---
-    plt.subplot(1, 2, 2)
-    # On utilise 'val_accuracy' pour matcher ton wrapper
-    plt.plot(hist['val_accuracy'], label='Val accuracy', color='green', linewidth=2)
-    plt.title('F1 Score', fontsize=12, fontweight='bold')
+    # --- Graphique Accuracy ---
+    plt.subplot(1, n_cols, 2)
+    plt.plot(hist['accuracy'], label='Train acc', linewidth=2)
+    plt.plot(hist['val_accuracy'], label='Val acc', linestyle='--')
+    plt.title('Accuracy', fontsize=12, fontweight='bold')
     plt.xlabel('Époques')
     plt.legend()
     plt.grid(True, alpha=0.3)
+
+    # --- Graphique F1-Score Validation ---
+    if has_val_f1:
+        plt.subplot(1, n_cols, 3)
+        plt.plot(hist['val_f1'], label='Val F1', color='green', linewidth=2)
+        plt.title('Validation F1', fontsize=12, fontweight='bold')
+        plt.xlabel('Époques')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
 
     plt.tight_layout()
     plt.show()
