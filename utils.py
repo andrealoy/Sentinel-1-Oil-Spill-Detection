@@ -541,7 +541,7 @@ def display_random_samples(root_path, n_samples=5, max_char=15):
 
 # --- Dataset Integrity & Cleaning ---
 
-def fix_images(data_dir):
+def fix_images(data_dir, verbose=False):
     """
     Deletes files with accepted extensions but invalid internal formats.
     """
@@ -551,10 +551,12 @@ def fix_images(data_dir):
         if filepath.suffix.lower() in IMG_EXTS:
             img_type = imghdr.what(filepath)
             if img_type not in IMG_TYPE_ACCEPTED:
-                print(f"Deleting file: {filepath} (Invalid type: {img_type})")
+                if verbose:
+                    print(f"Deleting file: {filepath} (Invalid type: {img_type})")
                 os.remove(filepath)
             else: 
-                print(f"Accepted file: {filepath} (Type: {img_type})")
+                if verbose:
+                    print(f"Accepted file: {filepath} (Type: {img_type})")
                 
     print("Image fixing completed.")
 
