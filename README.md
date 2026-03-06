@@ -24,6 +24,33 @@ This repository explores that hypothesis end-to-end:
 
 ---
 
+## Why we split by region (to avoid model “cheating”)
+
+A random image-level split is risky for this dataset because many patches come from nearby coordinates or the same acquisition scene.
+
+If patches from the same region appear in both train and test:
+
+- the model can memorize local background patterns (coastline geometry, acquisition artifacts, texture fingerprints),
+- evaluation becomes artificially optimistic,
+- and reported performance may not transfer to truly unseen areas.
+
+To reduce this leakage, we use a **spatial/region-aware split**:
+
+- patches are grouped by region/scene identifier extracted from filenames,
+- entire groups are assigned to `train`, `val`, or `test` (not split across them),
+- then models are evaluated on regions not seen during training.
+
+In short: this split strategy tests **generalization to new geographic contexts**, not just memorization of recurring spatial signatures.
+
+Related utilities in `utils.py`:
+
+- `extract_scene_id(...)`
+- `create_spatial_train_test_val_split(...)`
+- `create_spatial_split_full(...)`
+- `count_images_by_region(...)`
+
+---
+
 ## What the exploratory analysis found (`eda_outliers_fft.ipynb`)
 
 The EDA highlights consistent class-level differences:
